@@ -1,0 +1,404 @@
+<?php
+/**
+ * Implements hook_menu
+ */
+function mynodes_menu() {
+  $items = array();
+  $items['mynodes/node_batch'] = array(
+    'title' => 'Node Batch',
+    'description' => 'Creating Nodes In A Batch Process.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('mynodes_batch_form'),
+    'access arguments' => array('administer content'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_form
+ */
+function mynodes_batch_form($form, &$form_state) {
+	// Display page 2 if $form_state['storage']['page_two'] is set
+  if (isset($form_state['storage']['page_two'])) {
+    return mynodes_batch_form_page_two();
+  }
+  
+  $form = array();
+  $form['#attributes'] = array(
+    'enctype' => 'multipart/form-data'
+  );
+  $form['csvfile'] = array( 
+    '#title' => t('CSV File'),
+    '#type'  => 'file',
+    '#description' => ($max_size = parse_size(ini_get('upload_max_filesize'))) ? t('Due to server restrictions, the <strong>maximum upload file size is !max_size</strong>. Files that exceed this size will be disregarded.', array('!max_size' => format_size($max_size))) : '',
+	//'#default_value' => 'mycsv.csv',  // replacement
+  );
+  $form['next'] = array(
+    '#type' => 'submit',
+    '#value' => 'Next >>',
+  );
+  return $form;
+
+}
+
+function mynodes_batch_form_page_two($form_state=NULL) {
+
+  $form['hfile'] = array(
+    '#type' => 'hidden',
+    '#title' => 'Stored Csv file',
+	'#default_value' => $GLOBALS['myval'],  // replacement
+  );
+  
+  $form['number_of_nodes'] = array(
+    '#type' => 'select',
+    '#title' => 'Choose batch',
+	'#options' => number_of_options(),
+  );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => 'Submit',
+  );
+  return $form;
+  
+}
+
+function mynodes_batch_form_validate($form, &$form_state){
+	
+  if (isset($form_state['storage']['page_two'])) {
+	$numofnode = $form_state['values']['number_of_nodes'];
+    if (!$numofnode) {
+      //form_set_error('numbers', 'Please select an option.');
+    }
+    return;
+  }
+  $filepath = 'public://';
+  $validators = array('file_validate_extensions' => array('csv'));  // for multiple use => array('csv txt doc')
+ 
+  if($file = file_save_upload('csvfile', $validators , $filepath, FILE_EXISTS_REPLACE)){
+  //push file object to submit step 
+    $form_state['values']['csvfile'] = $file->destination;
+  } else {
+   //form_set_error('csvfile', t('Unable to copy uploaded file to !dest', array('!dest' => $filepath)));
+   form_set_error('csvfile', t('Please upload csv file.'));
+  }    
+}
+function number_of_options(){
+	$options = array();
+	if(isset($GLOBALS['myval'])){
+		$filepath = $GLOBALS['myval'];
+		$file = @file($filepath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+		$total = count($file)-1;
+		$limit = 10;
+		if($total < $limit){
+			$newlimit = 1;
+			$limit = $total;
+			
+		} else {
+			$newlimit = ceil($total/$limit);
+		}
+		$options = array();
+		$start = 1;
+		for($i=0; $i<$newlimit; $i++){
+			if($total < $limit){
+				$limit = $total;  // iterate end point to exact number. ie if 25 iterations then last option show 20 to 25.
+			}
+			$end = ($start+$limit)-1;
+			
+			$option[$start] = "Batch from ".($start)." to ".$end;  // options created here
+			
+			$start = $start + $limit;
+			$total = $total - $limit; // minus 10 numbers after every iteration.
+		}
+		$options = array('All' => '-- All --') + $option; // use + for merging array without reindexing
+	return $options;
+	} else {
+		return array();
+	}
+ }
+/**
+ * Implements hook_form_submit
+ */
+function mynodes_batch_form_submit($form, &$form_state) {
+	if($form_state['clicked_button']['#id'] == 'edit-next') {
+		$form_state['storage']['page_two'] = TRUE;
+		$form_state['storage']['page_one_values'] = $form_state['values'];
+		$GLOBALS['myval'] = $form_state['values']['csvfile'];
+		$form_state["rebuild"] = TRUE;   // Added
+	} else {
+  // get the submitted value
+  $start = $form_state['values']['number_of_nodes'];
+  $GLOBALS['myval'] = $form_state['values']['hfile'];
+  // Create operations array.
+	$operations = array();
+	ini_set('auto_detect_line_endings', true);
+	$filepath = $form_state['values']['hfile'];
+	if($handle = @file($filepath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)){
+		$tot = count($handle)-1;
+		if(!is_numeric($start)){ // ie value of option "---All---" is not numeric, then initialize start from 1.
+			$start = 1;
+			$end = $tot+1;
+		} else {
+			$end = $start + 10;
+			if($end > $tot){
+				$end = $tot+1;
+			}
+		}
+		for($i = $start; $i < $end; $i++){
+			$header = $handle[0];
+			$operations[] = array('mynodes_create_nodes',array($handle[$i], $header));
+		}
+	}
+	ini_set('auto_detect_line_endings',FALSE);
+  // Start Batch of node creation.
+  $batch = array(
+    'title' => t('Creating Nodes Finally.'),
+    'operations' => $operations,
+    'finished' => 'mynodes_batch_finished',
+    'init_message' => t('Node Creation Is Starting.'),
+    'progress_message' => t('Processed @current out of @total.'),
+    'error_message' => t('Node creation has encountered an error.'),    
+  );
+  // Set the batch operation.
+  batch_set($batch);
+  unset ($form_state['storage']);
+  batch_process('mynodes/node_batch'); // page to return to after complete
+  //$form_state['storage']['page_two'] = TRUE;
+  //$form_state["rebuild"] = TRUE;   // Added
+  
+}
+}
+/**
+ * Helper function to create nodes in batch process.
+ * @param type $number_of_nodes
+ */
+function mynodes_create_nodes($url, $header, &$context) {
+  /*
+   *  Your Programatically Node Creation Code Here.
+   */
+   
+	$newheader = explode(',', $header);
+	$col = count($newheader);
+	$newurl = explode(',', $url);
+	$urlcol = count($newurl);
+	if($col != $urlcol){
+		$context['message'] = "Skip the url $url due to missing column...";
+		$context['results'][] = "<b>Skipped row </b> $url <b> due to missing column</b>";
+	} else {
+	
+	$html = @file_get_contents($newurl[0]);
+	$new_dom = new DOMDocument();
+	$new_dom->preserveWhiteSpace = FALSE;  //we don't get bother from white space
+	libxml_use_internal_errors(TRUE); //disable libxml errors
+
+	if(!$html){
+		$context['results'][] = "<b>Something is wrong with url </b> $newurl[0]";
+	} else {
+	//if($html){ //if any html is actually returned
+		$new_dom->loadHTML($html);
+		libxml_clear_errors(); //remove errors for yucky html
+		$my_xpath = new DOMXPath($new_dom);
+		
+		$nav_row = $my_xpath->query('//nav[@class="osh-breadcrumb"]/ul/li/a');  // get cate and title
+		$total = ($nav_row->length) - 1;
+		
+		$title = utf8_decode($nav_row->item($total)->textContent);  
+		$cate = utf8_decode($nav_row->item($total-1)->textContent);
+		
+		//$title_row = $my_xpath->query('//div[@class="details -validate-size"]/span/h1[@class="title"]');  // get title
+		//$title = utf8_decode($title_row->item(0)->textContent);
+		
+		//$brand_row = $my_xpath->query('//div[@class="details -validate-size"]/p[@class="sub-title"]/a');  // get brand
+		//$brand = utf8_decode($brand_row->item(0)->textContent);
+		
+		$brand = $newurl[5];
+		
+		$price_row = $my_xpath->query('//div[@class="price-box"]/span[contains(@class, "price")]/span[2]');  // get price
+		$price = trim($price_row->item(0)->textContent);
+		
+		$policy_row = $my_xpath->query('//div[@id="productReturnPolicy"]/div[1]');  // get privacy policy
+		$policy = $new_dom->saveHtml($policy_row->item(0));
+		
+		$size_row = $my_xpath->query('//div[@class="list -sizes"]/span');  // get sizes
+		
+		$sizing_row = $my_xpath->query('//div[@id="productSizeGuide"]');  // get sizing guide
+		if($sizing_row->length > 0){
+			$sizing = $new_dom->saveHtml($sizing_row->item(0));
+		} else {
+			$sizing = "";
+		}	
+		
+		$rating_row = $my_xpath->query('//div[@id="ratingReviews"]/section[@class="summary"]');  // rating review summry
+		$rating = $new_dom->saveHtml($rating_row->item(0));
+		
+		$review_row = $my_xpath->query('//div[@id="ratingReviews"]/section[@class="listing"]/div[@class="reviews"]');  // All rating review
+		if($review_row->length > 0){
+			$review = $new_dom->saveHtml($review_row->item(0));
+		} else {
+			$review = "";
+		}
+		
+		$spec_row = $my_xpath->query('//div[@class="osh-tabs -center"]/div[@id="product-details"]');  // get specification
+		if($spec_row->length > 0){
+			$spec = $new_dom->saveHtml($spec_row->item(0));
+		
+			$sku_row = $my_xpath->query('//div[@id="product-details"]/div[@class="osh-table -no-border"][2]/div[@class="osh-row "]/div[@class="osh-col "]');
+			$sku = $sku_row->item(0)->textContent;  //get sku
+		
+			$desc_row = $my_xpath->query('//div[@id="productDescriptionTab"]');  // get descriptoin
+			$desc = $new_dom->saveHtml($desc_row->item(0));
+		} else {
+			$spec_row = $my_xpath->query('//div[@id="productDescriptionTab"]/div[@class="product-description"]');  // get specification
+			$spec = $new_dom->saveHtml($spec_row->item(0));
+		
+			$sku_row = $my_xpath->query('//div[@class="product-description"]/div[@class="osh-table -no-border"][1]/div[@class="osh-row "]/div[@class="osh-col "]');
+			$sku = $sku_row->item(0)->textContent;  //get sku
+		
+			$desc = "";  //get description
+		}
+	
+		$vocabulary1 = taxonomy_vocabulary_machine_name_load('new_category');
+		$ptid = 0;
+		for($i=1; $i<$total; $i++){
+			$ptid = isset($ptid) ? $ptid: 0;
+			$tname = utf8_decode($nav_row->item($i)->textContent);
+			$query = db_select('taxonomy_term_data', 'ttd');
+				$query->fields('ttd', array('tid'));
+				$query->condition('ttd.name', $tname, '=');
+				$query->innerjoin('taxonomy_term_hierarchy', 'tth', 'tth.tid=ttd.tid');
+				$query->condition('ttd.vid', $vocabulary1->vid, '=');
+				$query->condition('tth.parent', $ptid, '=');
+				$matched_terms = $query->execute()->fetchField();
+			if(!empty($matched_terms)) {
+				$ptid = $matched_terms;
+			} else {
+				$term = new stdClass();
+				$term->vid = $vocabulary1->vid;
+				$term->name = $tname;
+				$term->parent = $ptid;
+				$term->format = filter_default_format();
+				$term->description = '';
+				$term->weight = 0;
+				taxonomy_term_save($term);
+				$ptid = $term->tid; 
+            }
+		}
+		$vocabulary2 = taxonomy_vocabulary_machine_name_load('new_brand');
+			$query = db_select('taxonomy_term_data', 'ttd');
+				$query->fields('ttd', array('tid'));
+				$query->condition('ttd.name', $brand, '=');
+				$query->innerjoin('taxonomy_term_hierarchy', 'tth', 'tth.tid=ttd.tid');
+				$query->condition('ttd.vid', $vocabulary2->vid, '=');
+				$query->condition('tth.parent', '0', '=');
+				$matched_brand = $query->execute()->fetchField();
+			if(!empty($matched_brand)){
+				$btid = $matched_brand;
+			} else {
+				$term = new stdClass();
+				$term->vid = $vocabulary2->vid;
+				$term->name = $brand;
+				$term->parent = 0;
+				$term->format = filter_default_format();
+				$term->description = '';
+				$term->weight = 0;
+				taxonomy_term_save($term);
+				$btid = $term->tid;
+            }
+		$query = db_select('node', 'n');
+			$query->fields('n', array('nid'));
+			$query->condition('n.title', $title, '=');
+			$query->condition('n.type', 'simple_node', '=');
+			$query->condition('n.status', '1', '=');
+		$matched_node = $query->execute()->fetchField();
+		if(!empty($matched_node)){
+			$node = node_load($matched_node);  // load node by nid
+			$price_value = $node->field_node_price[$node->language][0]['value']; // getting value of price
+			
+			if($price_value != $price){  // if price is different then update node.
+				$context['message'] = "Updating price of Node: $title.";
+				$node->field_node_price[$node->language][0]['value'] = $price;
+				node_save($node);
+				$context['results'][] = "<b>Updated price of node from $price_value to $price : </b> ".check_plain($title);
+			} else {
+				$context['message'] = "Node: $title alreday exists.";
+				$context['results'][] = "<b>Already existing node : </b> ".check_plain($title);
+			}
+			
+		} else {
+		//if(empty($matched_node)){
+			$context['message'] = "Creating new node: $title...";
+			$context['results'][] = "<b>Newly Created node :</b> ".check_plain($title);
+			global $user;
+			$node = new stdClass();
+			$node->uid = $user->uid; //user id
+			$node->type = 'simple_node';    //content type
+			node_object_prepare($node);  // this provides the default values of content type ie sticky, promote, revision etc
+			//$node->language = LANGUAGE_NONE;
+			$node->language = 'und';
+			$node->created = time() - (rand( 1,240) * 60); //time created post
+			$node->title = $title;
+			$node->field_node_category[$node->language][]['tid'] = $ptid;
+			$node->field_node_brand[$node->language][]['tid'] = $btid;
+			$node->field_node_price[$node->language][0]['value'] = $price;
+			if($size_row->length > 0){
+				$total = $size_row->length;
+				for($i=0; $i<$total; $i++){
+					$mixed_input = (string) $size_row->item($i)->getAttribute('title');
+					$only_numbers = filter_var($mixed_input, FILTER_SANITIZE_NUMBER_INT);
+					if(empty($only_numbers)){
+						$only_numbers = "0";
+					}
+					$node->field_node_size[$node->language][$i]['value'] = utf8_decode($size_row->item($i)->textContent);
+					$node->field_node_stock[$node->language][$i]['value'] = utf8_decode($only_numbers);
+				}
+			}
+			
+			$node->field_node_newcol[$node->language][0]['value'] = $newurl[1];
+			$node->field_node_newcol1[$node->language][0]['value'] = $newurl[2];
+			$node->field_node_newcol2[$node->language][0]['value'] = $newurl[3];
+			$node->field_node_newcol3[$node->language][0]['value'] = $newurl[4];
+			$node->field_node_sku[$node->language][0]['value'] = $sku;
+			$node->field_node_rating[$node->language][0]['value'] = $rating;
+			$node->field_node_rating[$node->language][0]['format'] = 'full_html';
+			$node->field_node_review[$node->language][0]['value'] = $review;
+			$node->field_node_review[$node->language][0]['format'] = 'full_html';
+			$node->body[$node->language][0]['value'] = $desc;
+			$node->body[$node->language][0]['format']  = 'full_html';
+			$node->field_node_specification[$node->language][0]['value'] = $spec;
+			$node->field_node_specification[$node->language][0]['format'] = 'full_html';
+			$node->field_node_sizing_guide[$node->language][0]['value'] = $sizing;
+			$node->field_node_sizing_guide[$node->language][0]['format'] = 'full_html';
+			$node->field_node_return_policy[$node->language][0]['value'] = $policy;
+			$node->field_node_return_policy[$node->language][0]['format'] = 'full_html';
+			//$node->status   = 1;
+			//$node->promote  = 0;
+			//$node->sticky   = 0;
+			node_submit($node); // while submitting intiate the uid and timestemp for node, ie it prepares the node to save
+			node_save($node);
+		}
+	}
+	}
+}
+/**
+ * Callback : Called when batch process is finished.
+ */
+function mynodes_batch_finished($success, $results, $operations) {
+  if($success) {
+	watchdog(t('My Nodes'), 'Nodes Created Successfully Through Batch using %operation', array('%operations' => print_r($operations, TRUE)), WATCHDOG_INFO);
+    $message = t('<i>Total @count items successfully processed:</i>', array('@count' => count($results)));
+	$message .= theme('item_list', array('items' => $results));
+    drupal_set_message($message);
+
+	//drupal_set_message('Nodes Created Successfully.');
+  }
+  else {
+    $error_operation = reset($operations);
+    $message = t('An error occurred while processing %error_operation with arguments: @arguments', array(
+      '%error_operation' => $error_operation[0],
+      '@arguments' => print_r($error_operation[1], TRUE)
+    ));
+	watchdog(t('My Nodes'), 'An error occurred while processing %error_operation with arguments: @arguments', array('%error_operation' => $error_operation[0], '@arguments' => print_r($error_operation[1], TRUE)), WATCHDOG_ERROR);
+    
+    drupal_set_message($message, 'error');
+  }
+}

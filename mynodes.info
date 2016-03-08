@@ -1,0 +1,3 @@
+name = My Nodes Batch
+description = Mynodes module to create nodes in Batch.
+core = 7.x
